@@ -1,44 +1,17 @@
 dbmaint: use `$"..dbmaint";
+([getInMemoryTables; buildPersistedDB]): use `kx.datagen.capmkts
 
 dbdir: hsym `$first .z.x
-splayDB:.Q.dd[dbdir;`splayDB];
-partDB:.Q.dd[dbdir;`partDB];
-splayTdir:.Q.dd[splayDB;`trade];
 
-partDates:.z.d-1 0;
-partTdirs:{.Q.dd[partDB;x,`trade]} each partDates;
+start: 2026.04.01;
+end: 2026.04.03;
 
 fail: {-2 x;'`failed}
 
-init:{[]
-    rmrf splayDB;
-    rmrf partDB;
-    mkdir splayDB;
-    mkdir partDB;
-
-    .z.m.trade:([]
-        time:5#.z.P;
-        sym:`IBM`AMZN`GOOGL`META`SPOT;
-        size:1 2 3 4 5;
-        price:10 20 30 40 50f;
-        company:(
-            "International Business Machines Corporation";
-            "Amazon.com, Inc.";
-            "Alphabet Inc.";
-            "Meta Platforms, Inc.";
-            "Spotify Technology S.A."
-        );
-        moves:3 cut -5+15?10
-    );
-
-    .Q.dd[splayDB;`trade`] set .Q.en[splayDB;.z.m.trade];
-
-    {[db;dt;tname]
-        .Q.dd[db;dt,tname,`] set .Q.en[db;.z.m tname]
-    }[partDB;;`trade] each partDates;
-
-    delete trade from `.;
- };
+initGenData:{[db; mastertype]
+  rmrf db;
+  buildPersistedDB[db; ([tbls: `trade`daily; start; end; mastertype])]
+  }
 
 isWindows:.z.o in `w32`w64;
 
@@ -137,487 +110,850 @@ assert.fail:{[f;args;err]
     ]
  };
 
-testListCols:{[]
-    init[];
+testCheckTabExistence:{[]
+    initGenData[dbdir; `flat];
 
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    assert.match[dbmaint.listCols[`:nonExistingDB;`trade]; `$()];
-    assert.match[dbmaint.listCols[splayDB;`nonExistingTable]; `$()];
+    assert.true dbmaint.checkTabExistence[dbdir; `master];
+    assert.true dbmaint.checkTabExistence[dbdir; `daily];
+    assert.true dbmaint.checkTabExistence[dbdir; `trade];
+
+    rmrf .Q.dd[dbdir; start,`trade];
+    assert.fail[
+        dbmaint.checkTabExistence;
+        (dbdir; `trade);
+        "kdb+ object not found at: ", 1_string .Q.dd[dbdir;start,`trade]];
+ };
+
+testCheckColFiles:{[]
+    initGenData[dbdir; `flat];
+
+    dbmaint.checkColFiles[dbdir; `master];
+    dbmaint.checkColFiles[dbdir; `daily];
+    dbmaint.checkColFiles[dbdir; `trade];
+
+  };
+
+testCheckColFilesNested:{[]
+    initGenData[dbdir; `splayed];
+
+    dbmaint.checkColFiles[dbdir; `master];
+
+    copy[.Q.dd[dbdir;`master`cusip]; .Q.dd[dbdir;`master`cusip2]];
+    assert.fail[dbmaint.checkColFiles; (dbdir; `master); "Unknown column file(s): cusip2"];
+    rmrf .Q.dd[dbdir; `master`cusip2];
+
+    copy[.Q.dd[dbdir;`2026.04.01`trade`size]; .Q.dd[dbdir;`2026.04.01`trade`size2]];
+    assert.fail[dbmaint.checkColFiles; (dbdir; `trade); "Unknown column file(s): size2"];
+    rmrf .Q.dd[dbdir; `trade`size2];
+
+    rmrf .Q.dd[dbdir; `master`cusip];
+    assert.fail[dbmaint.checkColFiles; (dbdir; `master); "Missing column file(s): cusip"];
+  };
+
+testCheckDotDEquality:{[]
+    initGenData[dbdir; `splayed];
+
+    .Q.dd[dbdir;`2026.04.02`trade`.d] set reverse get .Q.dd[dbdir;`2026.04.02`trade`.d];
+    assert.fail[dbmaint.checkDotDEquality; (dbdir; `trade);
+        ".d mismatch at: ", 1_string .Q.dd[dbdir;`2026.04.02`trade]];
+  };
+
+testListCols:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.listCols;
+        (dbdir; `nonExistingTab);
+        "kdb+ object not found at: ", 1_string .Q.dd[dbdir;end,`nonExistingTab]
+    ];
+
+    / TODO: more checks here, currently just verifying it runs without error
+    dbmaint.listCols[dbdir;`master];
+    dbmaint.listCols[dbdir;`daily];
+    dbmaint.listCols[dbdir;`trade];
+ };
+
+testAddColFlat:{[]
+    initGenData[dbdir; `flat];
+
+    master: get .Q.dd[dbdir;`master];
+    dbmaint.addCol[dbdir;`master;`newCol;42];
+    dbmaint.addCol[dbdir;`master;`newSymCol;`mysym];
+    dbmaint.addCol[dbdir;`master;`newSymColMatch;`cusip];
+    dbmaint.addCol[dbdir;`master;`newStringCol; "string"];
+    assert.match[get .Q.dd[dbdir;`master]; (update newCol:42, newSymCol:`mysym, newSymColMatch:`cusip from master)
+        cross ([] newStringCol: enlist "string")];
  };
 
 testAddColSplay:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    dbmaint.addCol[splayDB;`trade;`size;0N];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    assert.fail[
+        dbmaint.addCol;
+        (dbdir;`daily;`open;0N);
+        "kdb+ object open found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    dbmaint.addCol[splayDB;`trade;`newCol;0N];
-    assert.true `newCol in key splayTdir;
-    assert.true `newCol in get splayTdir,`.d;
-    assert.true all 0N=get splayTdir,`newCol;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames,`newCol];
+    dailyColNames: dbmaint.listCols[dbdir;`daily];
+    dbmaint.addCol[dbdir;`daily;`newCol;42];
+    dbmaint.addCol[dbdir;`daily;`newSymCol;`mysym];
+    dbmaint.addCol[dbdir;`daily;`newSymColMatch;`cusip];
+    dbmaint.addCol[dbdir;`daily;`newStringCol; "string"];
+    assert.true all `newCol`newSymCol`newSymColMatch`newStringCol in key .Q.dd[dbdir;`daily];
+    assert.true all `newCol`newSymCol`newSymColMatch`newStringCol in get .Q.dd[dbdir;`daily`.d];
+    assert.true all 42=get .Q.dd[dbdir;`daily`newCol];
+    assert.true all `mysym=get .Q.dd[dbdir;`daily`newSymCol];
+    assert.true all `cusip=get .Q.dd[dbdir;`daily`newSymColMatch];
+    assert.true all "string" ~/: get .Q.dd[dbdir;`daily`newStringCol];
+    assert.match[([]); -21!.Q.dd[dbdir;`daily`newCol]];
+
+    assert.match[dbmaint.listCols[dbdir;`daily]; dailyColNames,`newCol`newSymCol`newSymColMatch`newStringCol];
+ };
+
+testAddColSplayCompr:{[]
+    initGenData[dbdir; `flat];
+
+    dailyColNames: dbmaint.listCols[dbdir;`daily];
+    dbmaint.addCol[dbdir;`daily;`newCol;0N; ([compparam: 17 2 6])];
+    assert.true `newCol in key .Q.dd[dbdir;`daily];
+    assert.true `newCol in get .Q.dd[dbdir;`daily`.d];
+    assert.true all 0N=get .Q.dd[dbdir;`daily`newCol];
+    assert.match[2 17 6i; -3 sublist value -21!.Q.dd[dbdir;`daily`newCol]];
+
+    assert.match[dbmaint.listCols[dbdir;`daily]; dailyColNames,`newCol];
  };
 
 testAddColPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
     // No affect since column already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    dbmaint.addCol[partDB;`trade;`size;0N];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    tradeColNames: dbmaint.listCols[dbdir;`trade];
 
-    dbmaint.addCol[partDB;`trade;`newCol;0N];
+    res: .[dbmaint.addCol; (dbdir;`trade;`size;0N); ::];
+    if[not res like "kdb+ object size found at: *"];
+
+    dbmaint.addCol[dbdir;`trade;`newCol;0N];
     {
         assert.true `newCol in key x;
         assert.true `newCol in get x,`.d;
         assert.true all 0N=get x,`newCol
-    } each partTdirs;
+    } each {.Q.dd[dbdir;x,`trade]} each start + til 1+ end - start;
 
-    dbmaint.addCol[partDB;`trade;`newSymCol;`symvalues;`sym];
+    dbmaint.addCol[dbdir;`trade;`newSymCol;`symvalues;([domain:`sym])];
     {
         assert.true `newSymCol in key x;
         assert.true `newSymCol in get x,`.d;
         assert.true all `symvalues=get x,`newSymCol
-    } each partTdirs;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames,`newCol`newSymCol];
+    } each {.Q.dd[dbdir;x,`trade]} each start + til 1+ end - start;
+    assert.match[dbmaint.listCols[dbdir;`trade]; tradeColNames,`newCol`newSymCol];
+ };
+
+testDelColFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.delCol;
+        (dbdir;`master;`nonExistingCol);
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    colNames: cols get .Q.dd[dbdir;`master];
+    dbmaint.delCol[dbdir;`master;`cusip];
+    assert.match[cols get .Q.dd[dbdir;`master]; colNames except `cusip];
  };
 
 testDelColSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    // No affect since column does not exist
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    dbmaint.delCol[splayDB;`trade;`nonExistingCol];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    assert.fail[
+        dbmaint.delCol;
+        (dbdir;`daily;`nonExistingCol);
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    dbmaint.delCol[splayDB;`trade;`size];
-    assert.false `size in key splayTdir;
-    assert.false `size in get splayTdir,`.d;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames except `size];
+    colNames:get .Q.dd[dbdir;`daily`.d];
+    dbmaint.delCol[dbdir;`daily;`open];
+    assert.match[asc (key .Q.dd[dbdir;`daily]) except `.d; asc colNames except `open];
+    assert.match[get .Q.dd[dbdir;`daily`.d]; colNames except `open];
 
     // Delete nested - should delete associated # file
-    assert.true all (`company,`$"company#") in key splayTdir;
-    dbmaint.delCol[splayDB;`trade;`company];
-    assert.false all (`company,`$"company#") in key splayTdir;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames except `size`company];
+    colNames:get .Q.dd[dbdir;`master`.d];
+    dbmaint.delCol[dbdir;`master;`description];
+    assert.match[asc (key .Q.dd[dbdir;`master]) except `.d; asc colNames except `description, `$"description#"];
+    assert.match[get .Q.dd[dbdir;`master`.d]; colNames except `description];
  };
 
 testDelColPart:{[]
-    init[];
+     initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    dbmaint.delCol[partDB;`trade;`nonExistingCol];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    res: .[dbmaint.delCol; (dbdir;`trade;`nonExistingCol); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol not found at: *', but got ", res];
 
-    dbmaint.delCol[partDB;`trade;`size];
+    dbmaint.delCol[dbdir;`trade;`size];
     {
-        assert.false `size in key x;
-        assert.false `size in get x,`.d;
-    } each partTdirs;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames except `size];
+        assert.false `size in key .Q.dd[dbdir;x,`trade];
+        assert.false `size in get .Q.dd[dbdir;x,`trade`.d];
+    } each start + til 1+ end - start;
+ };
 
-    // Delete nested - should delete associated # file
-    {assert.true all (`company,`$"company#") in key x} each partTdirs;
-    dbmaint.delCol[partDB;`trade;`company];
-    {assert.false all (`company,`$"company#") in key x} each partTdirs;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames except `size`company];
+testCopyColFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`master;`description;`description);
+        "Source and destination column names must be different"
+    ];
+
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`master;`nonExistingCol;`nonExistingColCopy);
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`master;`cusip;`ex);
+        "Column ex exists in master"
+    ];
+
+    colNames: cols get .Q.dd[dbdir;`master];
+    dbmaint.copyCol[dbdir;`master;`cusip;`cusipCopy];
+    assert.match[cols get .Q.dd[dbdir;`master]; colNames,`cusipCopy];
+    assert.match[get[.Q.dd[dbdir;`master]]`cusip; get[.Q.dd[dbdir;`master]]`cusipCopy];
  };
 
 testCopyColSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    // No affect since price already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    dbmaint.copyCol[splayDB;`trade;`size;`price];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`daily;`nonExistingCol;`nonExistingColCopy);
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    dbmaint.copyCol[splayDB;`trade;`size;`sizeCopy];
-    assert.true `sizeCopy in key splayTdir;
-    assert.true `sizeCopy in get splayTdir,`.d;
-    assert.match[get splayTdir,`size;get splayTdir,`sizeCopy];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames,`sizeCopy];
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`daily;`open;`close);
+        "Column close exists in ", 1_string .Q.dd[dbdir;`daily]
+    ];
+
+    colNames: get .Q.dd[dbdir;`daily`.d];
+    dbmaint.copyCol[dbdir;`daily;`open;`openCopy];
+    assert.match[get .Q.dd[dbdir;`daily`.d]; colNames,`openCopy];
+    assert.match[get .Q.dd[dbdir;`daily`open]; get .Q.dd[dbdir;`daily`openCopy]];
 
     // Copy nested - should copy associated # file
-    dbmaint.copyCol[splayDB;`trade;`company;`companyCopy];
-    assert.true all (`companyCopy,`$"companyCopy#") in key splayTdir;
-    assert.match[get splayTdir,`companyCopy;get splayTdir,`companyCopy];
-    assert.match[get splayTdir,`$"companyCopy#";get splayTdir,`$"companyCopy#"];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames,`sizeCopy`companyCopy];
+    colNames: get .Q.dd[dbdir;`master`.d];
+    dbmaint.copyCol[dbdir;`master;`description;`descriptionCopy];
+    assert.match[get .Q.dd[dbdir;`master`.d]; colNames,`descriptionCopy];
+    assert.true all (`description,`$"description#") in key .Q.dd[dbdir;`master];
+    assert.match[get .Q.dd[dbdir;`master`description]; get .Q.dd[dbdir;`master`descriptionCopy]];
+    assert.match[get .Q.dd[dbdir;`master,`$"description#"]; get .Q.dd[dbdir;`master,`$"descriptionCopy#"]];
  };
 
 testCopyColPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since price already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    dbmaint.copyCol[partDB;`trade;`size;`price];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    res: .[dbmaint.copyCol; (dbdir;`trade;`nonExistingCol;`nonExistingColCopy); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol not found at: *', but got ", res];
 
-    dbmaint.copyCol[partDB;`trade;`size;`sizeCopy];
+    assert.fail[
+        dbmaint.copyCol;
+        (dbdir;`trade;`size;`price);
+        "Column price exists in ", 1_string .Q.dd[dbdir;start, `trade]
+    ];
+
+    dbmaint.copyCol[dbdir;`trade;`size;`sizeCopy];
     {
-        assert.true `sizeCopy in key x;
-        assert.true `sizeCopy in get x,`.d;
-        assert.match[get x,`size;get x,`sizeCopy];
-    } each partTdirs;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames,`sizeCopy];
-
-    // Copy nested - should copy associated # file
-    dbmaint.copyCol[partDB;`trade;`company;`companyCopy];
-    {
-        assert.true all (`companyCopy,`$"companyCopy#") in key x;
-        assert.match[get x,`companyCopy;get x,`companyCopy];
-        assert.match[get x,`$"companyCopy#";get x,`$"companyCopy#"];
-    } each partTdirs;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames,`sizeCopy`companyCopy];
+        assert.true `sizeCopy in key .Q.dd[dbdir;x,`trade];
+        assert.true `sizeCopy in get .Q.dd[dbdir;x,`trade`.d];
+        assert.match[get .Q.dd[dbdir;(x;`trade;`sizeCopy)];get .Q.dd[dbdir;(x;`trade;`sizeCopy)]];
+    } each start + til 1+ end - start;
  };
 
-testHasCol:{[]
-    init[];
+testRenameColFlat:{[]
+    initGenData[dbdir; `flat];
 
-    assert.true dbmaint.hasCol[splayDB;`trade;`size];
-    assert.false dbmaint.hasCol[splayDB;`trade;`nonExistingCol];
-    assert.true dbmaint.hasCol[partDB;`trade;`size];
-    assert.false dbmaint.hasCol[partDB;`trade;`nonExistingCol];
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`master;`description;`description);
+        "New column name must be different from old column name"
+    ];
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`master;`nonExistingCol;`nonExistingColCopy);
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`master;`cusip;`ex);
+        "Column ex exists in master"
+    ];
+
+    colNames: cols get .Q.dd[dbdir;`master];
+    dbmaint.renameCol[dbdir;`master;`cusip;`cusipNew];
+    assert.match[cols get .Q.dd[dbdir;`master];@[colNames;colNames?`cusip;:;`cusipNew]];
  };
 
 testRenameColSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    // No affect since price already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    dbmaint.renameCol[splayDB;`trade;`size;`price];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`daily;`nonExistingCol;`nonExistingColCopy);
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    sizeData:get splayTdir,`size;
-    dbmaint.renameCol[splayDB;`trade;`size;`sizeRenamed];
-    assert.true `sizeRenamed in key splayTdir;
-    assert.true `sizeRenamed in get splayTdir,`.d;
-    assert.false `size in key splayTdir;
-    assert.false `size in get splayTdir,`.d;
-    assert.match[sizeData;get splayTdir,`sizeRenamed];
-    colNames:@[colNames;where colNames=`size;:;`sizeRenamed];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`daily;`open;`close);
+        "Column close exists in ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    // Rename nested - should rename associated # file
-    companyData:get splayTdir,`company;
-    companyHashData:get splayTdir,`$"company#";
-    dbmaint.renameCol[splayDB;`trade;`company;`companyRenamed];
-    assert.true all (`companyRenamed,`$"companyRenamed#") in key splayTdir;
-    assert.match[companyData;get splayTdir,`companyRenamed];
-    assert.match[companyHashData;get splayTdir,`$"companyRenamed#"];
-    colNames:@[colNames;where colNames=`company;:;`companyRenamed];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    colNames: get .Q.dd[dbdir;`daily`.d];
+    dbmaint.renameCol[dbdir;`daily;`open;`openNew];
+    assert.match[get .Q.dd[dbdir;`daily`.d]; @[colNames;colNames?`open;:;`openNew]];
+
+    // Copy nested - should copy associated # file
+    colNames: get .Q.dd[dbdir;`master`.d];
+    dbmaint.renameCol[dbdir;`master;`description;`descriptionCopy];
+    assert.match[get .Q.dd[dbdir;`master`.d]; @[colNames;colNames?`description;:;`descriptionCopy]];
+    assert.true all (`descriptionCopy,`$"descriptionCopy#") in key .Q.dd[dbdir;`master];
  };
 
 testRenameColPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since price already exists
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    dbmaint.renameCol[partDB;`trade;`size;`price];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    res: .[dbmaint.renameCol; (dbdir;`trade;`nonExistingCol;`nonExistingColCopy); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol not found at: *', but got ", res];
 
-    sizeData:get partTdirs[0],`size;
-    dbmaint.renameCol[partDB;`trade;`size;`sizeRenamed];
+    assert.fail[
+        dbmaint.renameCol;
+        (dbdir;`trade;`size;`price);
+        "Column price exists in ", 1_string .Q.dd[dbdir;start, `trade]
+    ];
+
+    dbmaint.renameCol[dbdir;`trade;`size;`sizeNew];
     {
-        assert.true `sizeRenamed in key x;
-        assert.true `sizeRenamed in get x,`.d;
-        assert.false `size in key x;
-        assert.false `size in get x,`.d;
-        assert.match[y;get x,`sizeRenamed];
-    }[;sizeData] each partTdirs;
-    colNames:@[colNames;where colNames=`size;:;`sizeRenamed];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+        assert.true `sizeNew in key .Q.dd[dbdir;x,`trade];
+        assert.true `sizeNew in get .Q.dd[dbdir;x,`trade`.d];
+        assert.false `size in key .Q.dd[dbdir;x,`trade];
+        assert.false `size in get .Q.dd[dbdir;x,`trade`.d];
+    } each start + til 1+ end - start;
+ };
 
-    // Rename nested - should rename associated # file
-    companyData:get partTdirs[0],`company;
-    companyHashData:get partTdirs[0],`$"company#";
-    dbmaint.renameCol[partDB;`trade;`company;`companyRenamed];
-    {
-        assert.true all (`companyRenamed,`$"companyRenamed#") in key x;
-        assert.match[y;get x,`companyRenamed];
-        assert.match[z;get x,`$"companyRenamed#"];
-    }[;companyData;companyHashData] each partTdirs;
-    colNames:@[colNames;where colNames=`company;:;`companyRenamed];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+testReorderColsFlat:{[]
+    initGenData[dbdir; `flat];
+
+    colNames: cols get .Q.dd[dbdir;`master];
+
+    assert.fail[
+        dbmaint.reorderCols;
+        (dbdir;`master;`unknownCol);
+        "Unknown column(s): unknownCol"
+    ];
+
+    dbmaint.reorderCols[dbdir;`master;reverse colNames];
+    assert.match[cols get .Q.dd[dbdir;`master]; reverse colNames];
+
+    // Only named columns are reordered
+    colNames: cols get .Q.dd[dbdir;`master];
+    dbmaint.reorderCols[dbdir;`master;-3#colNames];
+    assert.match[cols get .Q.dd[dbdir;`master]; (-3#colNames), -3_colNames];
  };
 
 testReorderColsSplay:{[]
-    init[];
-
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
+    initGenData[dbdir; `splayed];
 
     assert.fail[
         dbmaint.reorderCols;
-        (splayDB;`trade;colNames,`unknownCol);
+        (dbdir;`master;`unknownCol);
         "Unknown column(s): unknownCol"
     ];
 
-    dbmaint.reorderCols[splayDB;`trade;reverse colNames];
-    assert.match[dbmaint.listCols[splayDB;`trade]; reverse colNames];
+    colNames: get .Q.dd[dbdir;`master`.d];
+    dbmaint.reorderCols[dbdir;`master;reverse colNames];
+    assert.match[get .Q.dd[dbdir;`master`.d]; reverse colNames];
 
     // Only named columns are reordered
-    dbmaint.reorderCols[splayDB;`trade;`sym`company`time];
-    assert.match[dbmaint.listCols[splayDB;`trade]; `sym`company`time`moves`price`size];
+    colNames: get .Q.dd[dbdir;`daily`.d];
+    dbmaint.reorderCols[dbdir;`daily;-2#colNames];
+    assert.match[get .Q.dd[dbdir;`daily`.d]; (-2#colNames), -2_colNames];
  };
 
 testReorderColsPart:{[]
-    init[];
-
-    colNames:`time`sym`size`price`company`moves;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    initGenData[dbdir; `splayed];
 
     assert.fail[
         dbmaint.reorderCols;
-        (partDB;`trade;colNames,`unknownCol);
+        (dbdir;`trade;`unknownCol);
         "Unknown column(s): unknownCol"
     ];
 
-    dbmaint.reorderCols[partDB;`trade;reverse colNames];
-    assert.match[dbmaint.listCols[partDB;`trade]; reverse colNames];
+    colNames: get .Q.dd[dbdir;start,`trade`.d];
+    dbmaint.reorderCols[dbdir;`trade;reverse colNames];
+    colNames {assert.match[get .Q.dd[dbdir; y,`trade`.d]; reverse x]}/: start + til 1+ end - start;
 
     // Only named columns are reordered
-    dbmaint.reorderCols[partDB;`trade;`sym`company`time];
-    assert.match[dbmaint.listCols[partDB;`trade]; `sym`company`time`moves`price`size];
+    colNames: get .Q.dd[dbdir;start,`trade`.d];
+    dbmaint.reorderCols[dbdir;`trade;-2#colNames];
+    colNames {assert.match[get .Q.dd[dbdir; y,`trade`.d]; (-2#x), -2_x]}/: start + til 1+ end - start;
+ };
+
+
+testFnColFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.fnCol;
+        (dbdir;`master;`nonExistingCol;10*);
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    issueprice:get[.Q.dd[dbdir;`master]]`issueprice;
+    description:get[.Q.dd[dbdir;`master]]`description;
+
+    dbmaint.fnCol[dbdir;`master;`issueprice;10*];
+    dbmaint.fnCol[dbdir;`master;`description;upper];
+    assert.match[10*issueprice;get[.Q.dd[dbdir;`master]]`issueprice];
+    assert.match[upper description;get[.Q.dd[dbdir;`master]]`description];
  };
 
 testFnColSplay:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.fnCol[splayDB;`trade;`nonExistingCol;10*];
+    assert.fail[
+        dbmaint.fnCol;
+        (dbdir;`daily;`nonExistingCol;10*);
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    sizeData:get splayTdir,`size;
-    dbmaint.fnCol[splayDB;`trade;`size;10*];
-    assert.match[10*sizeData;get splayTdir,`size];
+    open:get .Q.dd[dbdir;`daily`open];
 
-    companyData:get splayTdir,`company;
-    dbmaint.fnCol[splayDB;`trade;`company;upper];
-    assert.match[upper companyData;get splayTdir,`company];
+    dbmaint.fnCol[dbdir;`daily;`open;10*];
+    assert.match[10*open;get .Q.dd[dbdir;`daily`open]];
  };
 
 testFnColPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.fnCol[partDB;`trade;`nonExistingCol;10*];
+    res: .[dbmaint.fnCol; (dbdir;`trade;`nonExistingCol;10*); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol'"];
 
-    sizeData:get partTdirs[0],`size;
-    companyData:get partTdirs[0],`company;
+    size:{get .Q.dd[dbdir;(x;`trade;`size)]} each start + til 1+ end - start;
 
-    dbmaint.fnCol[partDB;`trade;`size;10*];
-    dbmaint.fnCol[partDB;`trade;`company;upper];
-    {
-        assert.match[10*y;get x,`size];
-        assert.match[upper z;get x,`company];
-    }[;sizeData;companyData] each partTdirs;
+    dbmaint.fnCol[dbdir;`trade;`size;10*];
+    size {
+        assert.match[10*x;get .Q.dd[dbdir;(y;`trade;`size)]];
+    }' start + til 1+ end - start;
+ };
 
-    priceData:get partTdirs[0],`price;
-    dbmaint.fnCol[partDB;`trade;`price;neg;.z.d-1];
-    assert.match[neg priceData;get partTdirs[0],`price];
-    assert.match[priceData;get partTdirs[1],`price];
+testCastColFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.castCol;
+        (dbdir;`master;`nonExistingCol;"f");
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    issueprice:get[.Q.dd[dbdir;`master]]`issueprice;
+    assert.eq[9h;type issueprice];
+    dbmaint.castCol[dbdir;`master;`issueprice;"e"];
+    assert.match[`real$issueprice;get[.Q.dd[dbdir;`master]]`issueprice];
  };
 
 testCastColSplay:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.castCol[splayDB;`trade;`nonExistingCol;10*];
+    assert.fail[
+        dbmaint.castCol;
+        (dbdir;`daily;`nonExistingCol;"f");
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    assert.eq[7h;type get splayTdir,`size];
-    dbmaint.castCol[splayDB;`trade;`size;"f"];
-    assert.eq[9h;type get splayTdir,`size];
+    open:get .Q.dd[dbdir;`daily`open];
+    assert.eq[9h;type open];
+    dbmaint.castCol[dbdir;`daily;`open;"e"];
+    assert.match[`real$open;get .Q.dd[dbdir;`daily`open]];
  };
 
 testCastColPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.castCol[partDB;`trade;`nonExistingCol;10*];
+    res: .[dbmaint.castCol; (dbdir;`trade;`nonExistingCol;"f"); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol'"];
 
-    {assert.eq[7h;type get x,`size]} each partTdirs;
-    dbmaint.castCol[partDB;`trade;`size;"f"];
-    {assert.eq[9h;type get x,`size]} each partTdirs;
+    size:{get .Q.dd[dbdir;(x;`trade;`size)]} each start + til 1+ end - start;
+    {assert.eq[7h;type x]} each size;
+    dbmaint.castCol[dbdir;`trade;`size;"e"];
+    size {
+        assert.match[`real$x;get .Q.dd[dbdir;(y;`trade;`size)]];
+    }' start + til 1+ end - start;
+ };
+
+testAttrFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.setAttr;
+        (dbdir;`master;`nonExistingCol;`s);
+        "Column nonExistingCol does not exist in master"
+    ];
+
+    assert.eq[`;attr get[.Q.dd[dbdir;`master]]`cusip];
+    dbmaint.setAttr[dbdir;`master;`cusip;`g];
+    assert.eq[`g;attr get[.Q.dd[dbdir;`master]]`cusip];
+
+    dbmaint.rmAttr[dbdir;`master;`cusip];
+    assert.eq[`;attr get[.Q.dd[dbdir;`master]]`cusip];
  };
 
 testAttrSplay:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.setAttr[splayDB;`trade;`nonExistingCol;`s];
+    assert.fail[
+        dbmaint.setAttr;
+        (dbdir;`daily;`nonExistingCol;`s);
+        "kdb+ object nonExistingCol not found at: ", 1_string .Q.dd[dbdir;`daily]
+    ];
 
-    assert.eq[`;attr get splayTdir,`size];
-    dbmaint.setAttr[splayDB;`trade;`size;`s];
-    assert.eq[`s;attr get splayTdir,`size];
+    assert.eq[`;attr get .Q.dd[dbdir;`daily`open]];
+    dbmaint.setAttr[dbdir;`daily;`open;`g];
+    assert.eq[`g;attr get .Q.dd[dbdir;`daily`open]];
 
-    dbmaint.rmAttr[splayDB;`trade;`size];
-    assert.eq[`;attr get splayTdir,`size];
+    dbmaint.rmAttr[dbdir;`daily;`open];
+    assert.eq[`;attr get .Q.dd[dbdir;`daily`open]];
  };
 
 testAttrPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    // No affect since column does not exist
-    dbmaint.setAttr[partDB;`trade;`nonExistingCol;`s];
+    res: .[dbmaint.setAttr; (dbdir;`trade;`nonExistingCol;`s); ::];
+    if[not res like "kdb+ object nonExistingCol not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object nonExistingCol'"];
 
-    {assert.eq[`;attr get x,`size]} each partTdirs;
-    dbmaint.setAttr[partDB;`trade;`size;`s];
-    {assert.eq[`s;attr get x,`size]} each partTdirs;
+    {assert.eq[`;attr get .Q.dd[dbdir;(x;`trade;`size)]]} each start + til 1+ end - start;
+    dbmaint.setAttr[dbdir;`trade;`size;`g];
+    {assert.eq[`g;attr get .Q.dd[dbdir;(x;`trade;`size)]]} each start + til 1+ end - start;
 
-    dbmaint.rmAttr[partDB;`trade;`size];
-    {assert.eq[`;attr get x,`size]} each partTdirs;
- };
-
-testAddMissingColsSplay:{[]
-    init[];
-
-    colNames:`time`sym`size`price`company`moves;
-    goodTdir:`$string[splayTdir],"Copy";
-    rcopy[splayTdir;goodTdir];
-
-    // Single missing column
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    dbmaint.delCol[splayDB;`trade;`size];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames except `size];
-    dbmaint.addMissingCols[splayDB;`trade;goodTdir];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-
-    // Multiple missing columns (including nested)
-    dbmaint.delCol[splayDB;`trade;] each `size`price`company;
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames except `size`price`company];
-    dbmaint.addMissingCols[splayDB;`trade;goodTdir];
-    assert.match[dbmaint.listCols[splayDB;`trade]; colNames];
-    assert.true all (`company,`$"company#") in key splayTdir;
+    dbmaint.rmAttr[dbdir;`trade;`size];
+    {assert.eq[`;attr get .Q.dd[dbdir;(x;`trade;`size)]]} each start + til 1+ end - start;
  };
 
 testAddMissingColsPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
-    colNames:`time`sym`size`price`company`moves;
-    goodTdir:`$string[partTdirs 0],"Copy";
-    rcopy[partTdirs 0;goodTdir];
+    colNames: get .Q.dd[dbdir;start,`trade`.d];
+    goodTdir:`$string[.Q.dd[dbdir;start,`trade]],"Copy";
+    rcopy[.Q.dd[dbdir;start,`trade];goodTdir];
 
     // Single missing column
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    dbmaint.delCol[partDB;`trade;`size];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames except `size];
-    dbmaint.addMissingCols[partDB;`trade;goodTdir];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
+    dbmaint.delCol[dbdir;`trade;`size];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames except `size];
+    dbmaint.addMissingCols[dbdir;`trade;goodTdir];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`size]; 2_-21!.Q.dd[goodTdir;`size]];
 
-    // Multiple missing columns (including nested)
-    dbmaint.delCol[partDB;`trade;] each `size`price`company;
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames except `size`price`company];
-    dbmaint.addMissingCols[partDB;`trade;goodTdir];
-    assert.match[dbmaint.listCols[partDB;`trade]; colNames];
-    {assert.true all (`company,`$"company#") in key x} each partTdirs;
+    // Multiple missing columns
+    dbmaint.delCol[dbdir;`trade;] each `size`price`stop;
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames except `size`price`stop];
+    dbmaint.addMissingCols[dbdir;`trade;goodTdir];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`size]; 2_-21!.Q.dd[goodTdir;`size]];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`price]; 2_-21!.Q.dd[goodTdir;`price]];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`stop]; 2_-21!.Q.dd[goodTdir;`stop]];
+ };
+
+testAddMissingColsPartCompr:{[]
+    initGenData[dbdir; `flat];
+
+    colNames: get .Q.dd[dbdir;start,`trade`.d];
+    goodTdir:`$string[.Q.dd[dbdir;start,`trade]],"Copy";
+    rcopy[.Q.dd[dbdir;start,`trade];goodTdir];
+    (.Q.dd[goodTdir;`size], 17, 2, 6) set get .Q.dd[goodTdir;`size];
+    (.Q.dd[goodTdir;`price], 17, 2, 5) set get .Q.dd[goodTdir;`price];
+    (.Q.dd[goodTdir;`stop], 17, 2, 4) set get .Q.dd[goodTdir;`stop];
+
+
+    // Single missing column
+    dbmaint.delCol[dbdir;`trade;`size];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames except `size];
+    dbmaint.addMissingCols[dbdir;`trade;goodTdir];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`size]; 2_-21!.Q.dd[goodTdir;`size]];
+
+    // Multiple missing columns
+    dbmaint.delCol[dbdir;`trade;] each `size`price`stop;
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames except `size`price`stop];
+    dbmaint.addMissingCols[dbdir;`trade;goodTdir];
+    assert.match[dbmaint.listCols[dbdir;`trade]; colNames];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`size]; 2_-21!.Q.dd[goodTdir;`size]];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`price]; 2_-21!.Q.dd[goodTdir;`price]];
+    assert.match[2_-21!.Q.dd[dbdir;start,`trade`stop]; 2_-21!.Q.dd[goodTdir;`stop]];
+ };
+
+
+
+testAddTabFlat:{[]
+    initGenData[dbdir; `flat];
+
+    schemaFlat:([] sym :`$(); floatCol:"f"$(); intCol:"i"$());
+    dbmaint.addTab[dbdir;`flatTable; schemaFlat; `flat];
+    assert.match[schemaFlat; get .Q.dd[dbdir; `flatTable]];
+
  };
 
 testAddTabSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    schema:([] sym:`$(); ap:"f"$(); bp:"f"$());
-    assert.false `quote in key splayDB;
+    schemaSplay:([] sym :`$(); realCol:"e"$(); longCol:"j"$());
+    dbmaint.addTab[dbdir;`splayedTable; schemaSplay;`splayed];
+    assert.true `splayedTable in key dbdir;
+    assert.match[dbmaint.listCols[dbdir;`splayedTable]; cols schemaSplay];
+ };
 
-    dbmaint.addTab[splayDB;`sym;`quote;schema];
-    assert.true `quote in key splayDB;
-    assert.match[dbmaint.listCols[splayDB;`quote]; `sym`ap`bp];
+testAddTabSplayComprList:{[]
+    initGenData[dbdir; `splayed];
+
+    schemaSplay:([] sym :`$(); realCol:"e"$(); longCol:"j"$());
+    dbmaint.addTab[dbdir;`splayedTable; schemaSplay;`splayed; ([compparam: 17 2 6])];
+    assert.true `splayedTable in key dbdir;
+    assert.match[dbmaint.listCols[dbdir;`splayedTable]; cols schemaSplay];
+    assert.match[2 17 6i; -3 sublist value -21!.Q.dd[dbdir;`splayedTable`sym]];
+    assert.match[2 17 6i; -3 sublist value -21!.Q.dd[dbdir;`splayedTable`realCol]];
+    assert.match[2 17 6i; -3 sublist value -21!.Q.dd[dbdir;`splayedTable`longCol]];
+ };
+
+testAddTabSplayComprDict:{[]
+    initGenData[dbdir; `splayed];
+
+    schemaSplay:([] sym :`$(); realCol:"e"$(); longCol:"j"$());
+    dbmaint.addTab[dbdir;`splayedTable; schemaSplay;`splayed; ([compparam: ``realCol`longCol!(0 0 0; 17 2 6; 16 2 5)])];
+    assert.true `splayedTable in key dbdir;
+    assert.match[dbmaint.listCols[dbdir;`splayedTable]; cols schemaSplay];
+    assert.match[([]); -21!.Q.dd[dbdir;`splayedTable`sym]];
+    assert.match[2 17 6i; -3 sublist value -21!.Q.dd[dbdir;`splayedTable`realCol]];
+    assert.match[2 16 5i; -3 sublist value -21!.Q.dd[dbdir;`splayedTable`longCol]];
  };
 
 testAddTabPart:{[]
-    init[];
+    initGenData[dbdir; `flat];
 
     schema:([] sym:`$(); ap:"f"$(); bp:"f"$());
-    {assert.false `quote in key .Q.dd[x;y]}[partDB;] each partDates;
+    dbmaint.addTab[dbdir;`quote; schema;`partitioned;([domain: `sym])];
+    {assert.true `quote in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
+    assert.match[dbmaint.listCols[dbdir;`quote]; cols schema];
+ };
 
-    dbmaint.addTab[partDB;`sym;`quote;schema];
-    {assert.true `quote in key .Q.dd[x;y]}[partDB;] each partDates;
-    assert.match[dbmaint.listCols[partDB;`quote]; `sym`ap`bp];
+testDelTabFlat:{[]
+    initGenData[dbdir; `flat];
+
+    res: .[dbmaint.delTab; (dbdir;`nonExistingTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
+
+    dbmaint.delTab[dbdir;`master];
+    assert.false `master in key dbdir;
  };
 
 testDelTabSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    assert.true `trade in key splayDB;
-    dbmaint.delTab[splayDB;`trade];
-    assert.false `trade in key splayDB;
+    dbmaint.delTab[dbdir;`master];
+    assert.false `master in key dbdir;
  };
 
 testDelTabPart:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    {assert.true `trade in key .Q.dd[x;y]}[partDB;] each partDates;
-    dbmaint.delTab[partDB;`trade];
-    {assert.false `trade in key .Q.dd[x;y]}[partDB;] each partDates;
+    dbmaint.delTab[dbdir;`trade];
+    {assert.false `trade in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
  };
 
+testRenameTabFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.renameTab;
+        (dbdir;`master;`master);
+        "New table name must be different from old table name"
+    ];
+
+    res: .[dbmaint.renameTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
+
+    assert.fail[
+        dbmaint.renameTab;
+        (dbdir;`master;`exnames);
+        "kdb+ object exnames found at: ", 1_string dbdir
+    ];
+    dbmaint.renameTab[dbdir;`master;`masterRenamed];
+    assert.false `master in key dbdir;
+    assert.true `masterRenamed in key dbdir;
+
+ };
 testRenameTabSplay:{[]
-    init[];
+    initGenData[dbdir; `splayed];
 
-    colNames:`time`sym`size`price`company`moves;
+    res: .[dbmaint.renameTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
 
-    assert.true `trade in key splayDB;
-    dbmaint.renameTab[splayDB;`trade;`tradeRenamed];
-    assert.false `trade in key splayDB;
-    assert.true `tradeRenamed in key splayDB;
-    assert.match[dbmaint.listCols[splayDB;`tradeRenamed]; colNames];
+    assert.fail[
+        dbmaint.renameTab;
+        (dbdir;`master;`exnames);
+        "kdb+ object exnames found at: ", 1_string dbdir
+    ];
+    dbmaint.renameTab[dbdir;`master;`masterRenamed];
+    assert.false `master in key dbdir;
+    assert.true `masterRenamed in key dbdir;
  };
 
 testRenameTabPart:{[]
-    init[];
+    rmrf dbdir;
+    buildPersistedDB[dbdir; ([tbls: `trade`quote`daily; start; end; mastertype: `splayed])];
 
-    colNames:`time`sym`size`price`company`moves;
+    res: .[dbmaint.renameTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
 
-    {assert.true `trade in key .Q.dd[x;y]}[partDB;] each partDates;
-    dbmaint.renameTab[partDB;`trade;`tradeRenamed];
-    {assert.false `trade in key .Q.dd[x;y]}[partDB;] each partDates;
-    {assert.true `tradeRenamed in key .Q.dd[x;y]}[partDB;] each partDates;
-    assert.match[dbmaint.listCols[partDB;`tradeRenamed]; colNames];
+    res: .[dbmaint.renameTab; (dbdir;`trade;`quote); ::];
+    if[not res like "kdb+ object found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object found at: *', but got ", res];
+
+    dbmaint.renameTab[dbdir;`trade;`tradeRenamed];
+    {assert.false `trade in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
+    {assert.true `tradeRenamed in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
  };
 
+testCopyTabFlat:{[]
+    initGenData[dbdir; `flat];
+
+    assert.fail[
+        dbmaint.copyTab;
+        (dbdir;`master;`master);
+        "Target table name must be different from source table name"
+    ];
+
+    res: .[dbmaint.copyTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
+
+    assert.fail[
+        dbmaint.copyTab;
+        (dbdir;`master;`exnames);
+        "kdb+ object exnames found at: ", 1_string dbdir
+    ];
+    dbmaint.copyTab[dbdir;`master;`masterCopied];
+    assert.true `master in key dbdir;
+    assert.true `masterCopied in key dbdir;
+
+ };
+testCopyTabSplay:{[]
+    initGenData[dbdir; `splayed];
+
+    res: .[dbmaint.copyTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
+
+    assert.fail[
+        dbmaint.copyTab;
+        (dbdir;`master;`exnames);
+        "kdb+ object exnames found at: ", 1_string dbdir
+    ];
+    dbmaint.copyTab[dbdir;`master;`masterCopied];
+    assert.true `master in key dbdir;
+    assert.true `masterCopied in key dbdir;
+ };
+
+testCopyTabPart:{[]
+    rmrf dbdir;
+    buildPersistedDB[dbdir; ([tbls: `trade`quote`daily; start; end; mastertype: `splayed])];
+
+    res: .[dbmaint.copyTab; (dbdir;`nonExistingTab;`newTab); ::];
+    if[not res like "kdb+ object not found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object not found at: *', but got ", res];
+
+    res: .[dbmaint.copyTab; (dbdir;`trade;`quote); ::];
+    if[not res like "kdb+ object found at: *";
+        fail "ASSERT FAIL | Expected error message to contain 'kdb+ object found at: *', but got ", res];
+
+    dbmaint.copyTab[dbdir;`trade;`tradeCopied];
+    {assert.true `trade in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
+    {assert.true `tradeCopied in key .Q.dd[dbdir;x]} each start + til 1+ end - start;
+ };
+
+testCheckTabExistence[]
+testCheckColFiles[]
+testCheckColFilesNested[]
+testCheckDotDEquality[]
 testListCols[]
-testAddColSplay[]
-testAddColPart[]
-testDelColSplay[]
-testDelColPart[]
-testCopyColSplay[]
-testCopyColPart[]
-testHasCol[]
-testRenameColSplay[]
-testRenameColPart[]
-testReorderColsSplay[]
-testReorderColsPart[]
-testFnColSplay[]
-testFnColPart[]
-testCastColSplay[]
-testCastColPart[]
-testAttrSplay[]
-testAttrPart[]
-testAddMissingColsSplay[]
-testAddMissingColsPart[]
+
+testAddTabFlat[]
 testAddTabSplay[]
+testAddTabSplayComprList[]
+testAddTabSplayComprDict[]
 testAddTabPart[]
+
+testDelTabFlat[]
 testDelTabSplay[]
 testDelTabPart[]
+
+testRenameTabFlat[]
 testRenameTabSplay[]
 testRenameTabPart[]
 
-rmrf splayDB
-rmrf partDB
+testCopyTabFlat[]
+testCopyTabSplay[]
+testCopyTabPart[]
+
+testAddColFlat[]
+testAddColSplay[]
+testAddColSplayCompr[]
+testAddColPart[]
+
+testDelColFlat[]
+testDelColSplay[]
+testDelColPart[]
+
+testCopyColFlat[]
+testCopyColSplay[]
+testCopyColPart[]
+
+testRenameColFlat[]
+testRenameColSplay[]
+testRenameColPart[]
+
+testReorderColsFlat[]
+testReorderColsSplay[]
+testReorderColsPart[]
+
+testFnColFlat[]
+testFnColSplay[]
+testFnColPart[]
+
+testCastColFlat[]
+testCastColSplay[]
+testCastColPart[]
+
+testAttrFlat[]
+testAttrSplay[]
+testAttrPart[]
+
+testAddMissingColsPart[]
+testAddMissingColsPartCompr[]
+
+rmrf dbdir
 
 -1 "All tests passed";
 
-exit 0
+if[not "-debug" in .z.x; exit 0]
