@@ -1,0 +1,27 @@
+context:
+  version: "2.0.1"
+
+package:
+  name: q-kx-dbmaint
+  version: ${{ version }}
+
+source:
+  path: ..
+  filter:
+    exclude:
+      - recipe/**
+
+build:
+  number: 0
+  noarch: generic
+  script:
+    - mkdir -p $PREFIX/lib/q/mod/kx
+    - cp dbmaint.q $PREFIX/lib/q/mod/kx/
+
+requirements:
+  run:
+    - q-kx-datagen
+
+tests:
+  - script:
+    - test -f ${PREFIX}/lib/q/mod/kx/dbmaint.q
