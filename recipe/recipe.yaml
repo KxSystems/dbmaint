@@ -1,5 +1,5 @@
 context:
-  version: "2.0.1"
+  version: ${{ env.get("PKG_VERSION", default="0.0.0") }}
 
 package:
   name: q-kx-dbmaint
@@ -17,6 +17,16 @@ build:
   script:
     - mkdir -p $PREFIX/lib/q/mod/kx
     - cp dbmaint.q $PREFIX/lib/q/mod/kx/
+
+about:
+  homepage: https://github.com/KxSystems/kx-dbmaint
+  repository: https://github.com/KxSystems/kx-dbmaint
+  license: Apache-2.0
+  license_file: LICENSE
+  summary: Database maintenance functions for persisted kdb+ databases.
+  description: >-
+    kdb-x module providing functions for making changes in a persisted kdb+
+    database, such as adding, removing and renaming tables and columns.
 
 requirements:
   run:
