@@ -1,0 +1,24 @@
+name: q-kx-dbmaint
+description: >-
+  This module provides functions for making changes in a persisted kdb+ database.
+homepage: https://github.com/KxSystems/dbmaint
+namespace: kx.dbmaint
+
+source:
+  repo: https://github.com/KxSystems/dbmaint
+  version: 2.0.1
+  path: .
+
+license: Apache-2.0
+
+maintainers:
+  - github: KxSystems
+
+platforms:
+  - linux
+  - linux-arm
+  - mac
+  - mac-arm
+
+compatibility:
+  kdbx: ">=5.0.0"
